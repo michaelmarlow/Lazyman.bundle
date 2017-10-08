@@ -14,7 +14,6 @@ THUMB_MLB = 'mlb_logo.jpg'
 ICON = 'LM.png'
 
 DAYS_TO_SHOW = 10
-GAMES_TO_SHOW = 30
 PAGE_LIMIT = 100
 NAME = 'Lazyman'
 
@@ -45,43 +44,15 @@ def MainMenu():
 
 def SelectDate(sport):
 	oc = ObjectContainer(title2="Select Date")
+	time_delta = datetime.timedelta(days=1)
 	date = datetime.date.today()
 
-	if sport == "mlb":
-		time_delta = datetime.timedelta(days=1)
-		for i in range(DAYS_TO_SHOW):
-	 		oc.add(DirectoryObject(
-	 			key=Callback(Date, date=date, sport=sport),
-				title=date.strftime("%d %B %Y")),
-	 		)
-			date = date - time_delta
-	else:
-		time_delta = datetime.timedelta(days=30)
-
-		while len(oc.objects) < GAMES_TO_SHOW:
-			# Look 'time_delta' days back for games that have occurred
-			scheduleUrl = GAME_SCHEDULE_URL_NHL % (date - time_delta, date)
-			schedule = JSON.ObjectFromURL(scheduleUrl)
-
-			# Add any dates that had games occur to a list of dates for later
-			# use
-			if schedule["totalItems"] > 0 or len(schedule["dates"]) != 0:
-
-				# The list is reversed so we get more recent dates first
-				for day in reversed(schedule['dates']):
-					# The string is in YEAR-MONTH-DAY format
-					splitDate = day['date'].split('-')
-
-					# Create a 'date' object
-					tempDate = datetime.date(int(splitDate[0]), int(splitDate[1]), int(splitDate[2]))
-
-					# Add the date
-					oc.add(DirectoryObject(
-						key=Callback(Date, date=tempDate, sport=sport),
-						title=day['date']),
-					)
-			# Change the date by 'time_delta' to contine looking for more games
-			date = date - time_delta
+	for i in range(DAYS_TO_SHOW):
+		oc.add(DirectoryObject(
+			key=Callback(Date, date=date, sport=sport),
+			title=date.strftime("%d %B %Y")),
+		)
+		date = date - time_delta
 
 	return oc 
 
@@ -167,6 +138,11 @@ def getStreamVCO(date, game, feed):
 		except:
 			return []
 
+		res_fps_info_pattern = re.compile('EXT-X-STREAM-INF:RESOLUTION=(\d+)x(\d+),BANDWIDTH=(\d+),FRAME-RATE=(\d+\.\d+),CODECS=".+"')
+		res_info_pattern = re.compile('EXT-X-STREAM-INF:RESOLUTION=(\d+)x(\d+),BANDWIDTH=(\d+),CODECS=".+"')
+		fps_info_pattern = re.compile('EXT-X-STREAM-INF:BANDWIDTH=(\d+),RESOLUTION=(\d+)x(\d+),FRAME-RATE=(\d+\.\d+),CODECS=".+"')
+		info_pattern = re.compile('EXT-X-STREAM-INF:BANDWIDTH=(\d+),RESOLUTION=(\d+)x(\d+),CODECS=".+"')
+
 		streams = HTTP.Request(real_url).content.split("#")
 		objects = []
 
@@ -177,60 +153,53 @@ def getStreamVCO(date, game, feed):
 			try:
 				info, url_end = stream.splitlines()
 			except ValueError:
+				Log(stream)
 				continue
+			info, url_end = stream.splitlines()
 
-			info = info.split(':')
+			stream_meta = fps_info_pattern.search(info)
+			if stream_meta == None:
+				stream_meta = info_pattern.search(info)
+				if stream_meta == None:
+					stream_meta = res_fps_info_pattern.search(info)
+					if stream_meta == None:
+						stream_meta = res_info_pattern.search(info)
+						if stream_meta == None:
+							continue
+						else:
+							width_s, height_s, bw = stream_meta.groups()
+							fps_s = '30'
 
-			# If we don't see 'EXT-X-STREAM-INF' we can skip this one
-			if 'EXT-X-STREAM-INF' not in info[0]:
-				continue
+					else:
+						width_s, height_s, bw, fps_s = stream_meta.groups()
 
-			# We only need the keys/values now
-			info = info[1]
-
-			# All of the key/value pairs are split by commas
-			info = info.split(',')
-
-			width_s = 0
-			height_s = 0
-			bw = 0
-			fps_s = 30
-
-			# Search each key/value for needed keys
-			# If the key is found, the key/value are split by '=' and we can then
-			# extract the value
-			for keyval in info:
-				if 'RESOLUTION' in keyval:
-					width_s = keyval.split('=')[1].split('x')[0]
-					height_s = keyval.split('=')[1].split('x')[1]
-
-				if 'BANDWIDTH' in keyval:
-					bw = keyval.split('=')[1]
-
-				if 'FRAME-RATE' in keyval:
-					fps_s = keyval.split('=')[1]
-
-			if width_s and height_s and bw and fps_s:
-				res_url = real_url.rsplit('/', 1)[0] + "/" + url_end
-				media_object = MediaObject(
-						protocol = 'hls',
-						video_codec = VideoCodec.H264,
-						video_frame_rate = fps_s,
-						audio_codec = AudioCodec.AAC,
-						video_resolution = height_s,
-						audio_channels = 2,
-						optimized_for_streaming = True,
-						parts = [
-							PartObject(key = HTTPLiveStreamURL(Callback(PlayStream, url=res_url)))
-						]
-					)
-
-				if int(height_s) < best_height or float(fps_s) < best_fps:
-					objects.append(media_object)
 				else:
-					best_height = int(height_s)
-					best_fps = float(fps_s)
-					objects.insert(0, media_object)
+					bw, width_s, height_s = stream_meta.groups()
+					fps_s = '30'
+
+			else:
+				bw, width_s, height_s, fps_s = stream_meta.groups()
+
+			res_url = real_url.rsplit('/', 1)[0] + "/" + url_end
+			media_object = MediaObject(
+					protocol = 'hls',
+					video_codec = VideoCodec.H264,
+					video_frame_rate = fps_s,
+					audio_codec = AudioCodec.AAC,
+					video_resolution = height_s,
+					audio_channels = 2,
+					optimized_for_streaming = True,
+					parts = [
+						PartObject(key = HTTPLiveStreamURL(Callback(PlayStream, url=res_url)))
+					]
+				)
+
+			if int(height_s) < best_height or float(fps_s) < best_fps:
+				objects.append(media_object)
+			else:
+				best_height = int(height_s)
+				best_fps = float(fps_s)
+				objects.insert(0, media_object)
 
 		STREAM_CACHE[game.game_id][feed.mediaId] = objects
 		return objects
